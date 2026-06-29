@@ -1,0 +1,16 @@
+{
+  "name": "veo-idle-i2v",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postprocess": "python3 scripts/postprocess_video_frames.py",
+    "soften-outline": "python3 scripts/soften_outline_alpha.py",
+    "foreground-recovery": ".venv-ml/bin/python scripts/foreground_recovery_bakeoff.py",
+    "corridorkey-proxy": ".venv-ml/bin/python scripts/corridorkey_proxy_experiment.py",
+    "spriteify-pymatting": ".venv-ml/bin/python scripts/spriteify_video_pymatting.py",
+    "crop-sprites": "python3 scripts/crop_sprite_frames.py",
+    "serve-viewer": "node scripts/viewer_server.mjs",
+    "restart-viewer": "node scripts/restart_viewer_server.mjs"
+  }
+}

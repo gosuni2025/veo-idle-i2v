@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sprite Forge PyMatting"
+  short_description: "Generate sprites with PyMatting chroma key"
+  default_prompt: "Use $sprite-forge-pymatting to generate a magenta-background character sprite and recover a transparent PNG with PyMatting FG."

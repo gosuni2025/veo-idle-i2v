@@ -1,0 +1,3 @@
+pymatting
+numpy
+Pillow

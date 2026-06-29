@@ -1,0 +1,33 @@
+# Secrets
+.env
+.env.*
+
+# Dependencies and local runtimes
+node_modules/
+.venv*/
+__pycache__/
+*.py[cod]
+
+# Local/generated artifacts
+.tmp/
+outputs/
+inputs/
+pretrained_models/
+tools/
+
+# Media and model binaries
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.mp4
+*.mov
+*.webm
+*.pth
+*.pt
+*.safetensors
+
+# OS/editor noise
+.DS_Store
+*.log

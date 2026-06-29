@@ -1,0 +1,13 @@
+Use the uploaded START frame as the exact first frame of this video. Treat the character as a frozen 2D sprite/cutout, not a 3D character or turntable. Do not redesign, redraw, reinterpret, or replace the character.
+
+Preserve the exact character identity, face, outfit, hand pose, finger positions, body pose, front-facing orientation, framing, crop, scale, composition, and the solid pure magenta background from the first frame.
+
+The camera and the character's body are completely frozen for the entire clip. Hands and fingers are locked in place and must not move at all. Head, face, eyes, mouth, shoulders, torso, body, arms, clothes, accessories, and background stay still. No body turn, no head turn, no torso rotation, no shoulder movement, no arm movement, no hand movement, no breathing motion, no leaning, no pose transition, no 3D rotation, no parallax, no perspective shift. The camera is completely locked: no zoom, no pan, no tilt, no rotation, no dolly, no reframing, no crop change.
+
+Only existing hair strands move very subtly in a soft breeze, with tiny 2D movement at the bangs and loose side strands. Hair roots and the overall silhouette stay mostly fixed. No blinking, no expression change, no pose change, no new character.
+
+No floating particles, no dust, no sparkles, no magical motes, no embers, no snow, no rain, no bokeh dots, no decorative effects, no background animation, no light streaks, no aura.
+
+**CRITICAL LOOP REQUIREMENT:** Make the animation usable as a seamless looping game idle animation. The first frame and the final frame must match exactly, with no visible jump when the video loops. If exact first/final frame matching conflicts with motion, keep the motion smaller and more subtle.
+
+Silent idle animation, no music, no sound effects, no dialogue, no ambient sound. Minimal motion, clean stable anime illustration, loopable idle.
