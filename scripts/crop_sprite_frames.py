@@ -26,15 +26,16 @@ def main() -> int:
     with Image.open(frames[0]) as first:
         frame_size = first.size
 
-    crop, timeline = read_export_config(args)
+    crop, timeline, output_size_spec, output_scale_percent = read_export_config(args)
     crop = maybe_scale_crop(crop, frame_size, args)
     crop = validate_crop(crop, frame_size)
+    output_size = resolve_output_size(crop, output_size_spec, output_scale_percent)
     timeline = resolve_timeline(args, timeline, len(frames))
     animation_frames = select_frames(frames, timeline)
     if not animation_frames:
         raise SystemExit("Frame selection settings removed every frame.")
 
-    out_dir = resolve_path(args.out_dir) if args.out_dir else default_out_dir(root_dir, frame_dir, crop, timeline)
+    out_dir = resolve_path(args.out_dir) if args.out_dir else default_out_dir(root_dir, frame_dir, crop, timeline, output_size)
     prepare_output_dir(out_dir, args.overwrite)
 
     box = (crop["x"], crop["y"], crop["x"] + crop["width"], crop["y"] + crop["height"])
@@ -58,7 +59,8 @@ def main() -> int:
         source_to_output_index[source_number] = output_index
         out_name = frame_path.name if args.preserve_names else f"frame_{output_index:04d}.png"
         with Image.open(frame_path) as image:
-            image.convert("RGBA").crop(box).save(out_dir / out_name)
+            export_image = resize_rgba_for_export(image.convert("RGBA").crop(box), output_size)
+            export_image.save(out_dir / out_name)
         output_files.append({"image_index": output_index, "source_frame": source_number, "file": out_name})
         animation_sequence.append(
             {
@@ -79,6 +81,9 @@ def main() -> int:
         "frame_count": len(animation_frames),
         "unique_frame_count": len(output_files),
         "source_frame_size": {"width": frame_size[0], "height": frame_size[1]},
+        "output_size": output_size,
+        "output_scale_percent": output_scale_percent,
+        "output_frame_size": output_size,
         "crop": crop,
         "timeline": timeline,
         "output_files": output_files,
@@ -96,6 +101,9 @@ def main() -> int:
         "ping_pong": timeline["ping_pong"],
         "frame_count": metadata["frame_count"],
         "unique_frame_count": metadata["unique_frame_count"],
+        "output_size": output_size,
+        "output_scale_percent": output_scale_percent,
+        "output_frame_size": metadata["output_frame_size"],
         "crop": crop,
         "images": output_files,
         "animation_indices": metadata["animation_indices"],
@@ -147,6 +155,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fps", type=float, help="Playback FPS to store in crop metadata.")
     parser.add_argument("--ping-pong", action="store_true", help="Store ping-pong playback intent in metadata.")
     parser.add_argument("--preserve-names", action="store_true", help="Keep original source frame filenames.")
+    parser.add_argument("--scale", type=float, default=100.0, help="Legacy output image scale percent, used only when no exact output size is set.")
+    parser.add_argument("--out-width", type=int, help="Exact output PNG width in pixels.")
+    parser.add_argument("--out-height", type=int, help="Exact output PNG height in pixels.")
     parser.add_argument("--out-dir", help="Output frame directory. Defaults to a crop-specific sibling directory.")
     parser.add_argument("--overwrite", action="store_true", help="Allow writing into an existing non-empty output dir.")
     parser.add_argument(
@@ -157,20 +168,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def read_export_config(args: argparse.Namespace) -> tuple[dict[str, int], dict]:
+def read_export_config(args: argparse.Namespace) -> tuple[dict[str, int], dict, dict[str, int] | None, float]:
+    cli_output_size = output_size_from_args(args)
     if args.crop_json:
         data = json.loads(resolve_path(args.crop_json).read_text(encoding="utf-8"))
         crop_source = data.get("crop", data)
         crop = normalize_crop(crop_source)
         if "frame_size" in data:
             crop["json_frame_size"] = normalize_frame_size(data["frame_size"])
-        return crop, data.get("timeline", {})
+        output_size = cli_output_size or normalize_output_size(data.get("output_size") or data.get("output_frame_size"))
+        return crop, data.get("timeline", {}), output_size, float(data.get("output_scale_percent", args.scale))
 
     values = {"x": args.x, "y": args.y, "width": args.width, "height": args.height}
     missing = [key for key, value in values.items() if value is None]
     if missing:
         raise SystemExit("Pass --crop-json or all of --x --y --width --height.")
-    return {key: int(value) for key, value in values.items() if value is not None}, {}
+    return {key: int(value) for key, value in values.items() if value is not None}, {}, cli_output_size, float(args.scale)
 
 
 def normalize_crop(value: dict) -> dict[str, int]:
@@ -195,6 +208,40 @@ def normalize_frame_size(value: dict) -> dict[str, int]:
         }
     except KeyError as error:
         raise SystemExit(f"frame_size JSON is missing key: {error.args[0]}") from error
+
+
+def output_size_from_args(args: argparse.Namespace) -> dict[str, int] | None:
+    if args.out_width is None and args.out_height is None:
+        return None
+    if args.out_width is None or args.out_height is None:
+        raise SystemExit("Pass both --out-width and --out-height.")
+    return {"width": args.out_width, "height": args.out_height}
+
+
+def normalize_output_size(value) -> dict[str, int] | None:
+    if not value:
+        return None
+    try:
+        return {
+            "width": int(round(float(value["width"]))),
+            "height": int(round(float(value["height"]))),
+        }
+    except KeyError as error:
+        raise SystemExit(f"output_size JSON is missing key: {error.args[0]}") from error
+
+
+def validate_output_size(value: dict[str, int]) -> dict[str, int]:
+    width = int(value["width"])
+    height = int(value["height"])
+    if width <= 0 or height <= 0:
+        raise SystemExit("Output width and height must be positive.")
+    return {"width": width, "height": height}
+
+
+def resolve_output_size(crop: dict[str, int], output_size: dict[str, int] | None, scale_percent: float) -> dict[str, int]:
+    if output_size:
+        return validate_output_size(output_size)
+    return scaled_size((crop["width"], crop["height"]), validate_output_scale_percent(scale_percent))
 
 
 def maybe_scale_crop(crop: dict[str, int], frame_size: tuple[int, int], args: argparse.Namespace) -> dict[str, int]:
@@ -235,6 +282,29 @@ def validate_crop(crop: dict[str, int], frame_size: tuple[int, int]) -> dict[str
             f"Crop {x},{y},{width},{height} exceeds frame size {frame_width}x{frame_height}."
         )
     return {"x": x, "y": y, "width": width, "height": height}
+
+
+def validate_output_scale_percent(value: float) -> float:
+    scale = float(value)
+    if scale <= 0 or scale > 100:
+        raise SystemExit("--scale must be greater than 0 and no more than 100.")
+    return scale
+
+
+def scaled_size(size: tuple[int, int], scale_percent: float) -> dict[str, int]:
+    width, height = size
+    if scale_percent == 100:
+        return {"width": width, "height": height}
+    scale = scale_percent / 100.0
+    return {"width": max(1, round(width * scale)), "height": max(1, round(height * scale))}
+
+
+def resize_rgba_for_export(image: Image.Image, output_size: dict[str, int]) -> Image.Image:
+    next_size = (output_size["width"], output_size["height"])
+    if next_size == image.size:
+        return image
+    # ponytail: Pillow RGBa is premultiplied alpha; use it instead of owning a fragile pixel loop.
+    return image.convert("RGBa").resize(next_size, Image.Resampling.LANCZOS).convert("RGBA")
 
 
 def resolve_frame_dir(value: str | None) -> tuple[Path, Path]:
@@ -368,7 +438,7 @@ def select_frames(frames: list[Path], timeline: dict) -> list[tuple[int, Path]]:
     return selected
 
 
-def default_out_dir(root_dir: Path, frame_dir: Path, crop: dict[str, int], timeline: dict) -> Path:
+def default_out_dir(root_dir: Path, frame_dir: Path, crop: dict[str, int], timeline: dict, output_size: dict[str, int]) -> Path:
     if timeline.get("sequence_frames") is not None:
         sequence = timeline["sequence_frames"]
         sequence_suffix = f"_seq{len(sequence)}_unique{len(set(sequence))}"
@@ -381,10 +451,15 @@ def default_out_dir(root_dir: Path, frame_dir: Path, crop: dict[str, int], timel
     )
     step_suffix = f"_step{timeline['frame_step']}" if timeline["frame_step"] > 1 else ""
     delete_suffix = f"_drop{len(timeline['deleted_frames'])}" if timeline["deleted_frames"] else ""
+    output_suffix = (
+        f"_out{output_size['width']}x{output_size['height']}"
+        if output_size != {"width": crop["width"], "height": crop["height"]}
+        else ""
+    )
     name = (
         f"{frame_dir.name}_crop_"
         f"x{crop['x']}_y{crop['y']}_w{crop['width']}_h{crop['height']}"
-        f"{trim_suffix}{step_suffix}{delete_suffix}{sequence_suffix}"
+        f"{trim_suffix}{step_suffix}{delete_suffix}{sequence_suffix}{output_suffix}"
     )
     return root_dir / name
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { createReadStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,7 +9,10 @@ import path from "node:path";
 const DEFAULT_PORT = 8767;
 const PROJECT_FILE = "viewer-project.json";
 const PROJECTS_DIR = "viewer-projects";
+const VIDEO_IMPORT_DIR = "outputs/google-flow";
+const MAX_IMPORT_BYTES = 2 * 1024 * 1024 * 1024;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm"]);
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
   [".js", "text/javascript; charset=utf-8"],
@@ -75,6 +78,10 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/export" && request.method === "POST") {
       await handleExport(request, response);
+      return;
+    }
+    if (url.pathname === "/api/import-video" && request.method === "POST") {
+      await handleImportVideo(url, request, response);
       return;
     }
     if (url.pathname === "/api/reveal" && request.method === "POST") {
@@ -542,6 +549,8 @@ async function handleExport(request, response) {
       sequence: sequencePath,
       frame_count: metadata.frame_count,
       unique_frame_count: metadata.unique_frame_count,
+      output_scale_percent: metadata.output_scale_percent,
+      output_frame_size: metadata.output_frame_size,
       stdout: result.stdout,
     });
   } catch (error) {
@@ -580,6 +589,118 @@ async function handleReveal(request, response) {
   }
 }
 
+async function handleImportVideo(url, request, response) {
+  const fileName = sanitizeUploadName(url.searchParams.get("name") || request.headers["x-file-name"] || "video.mp4");
+  const ext = path.extname(fileName).toLowerCase();
+  if (!VIDEO_EXTENSIONS.has(ext)) {
+    sendJson(response, 400, { error: "Drop an MP4, MOV, M4V, or WEBM video" });
+    return;
+  }
+
+  const contentLength = Number(request.headers["content-length"] || 0);
+  if (contentLength > MAX_IMPORT_BYTES) {
+    sendJson(response, 413, { error: "Video file is too large" });
+    return;
+  }
+
+  const importDir = path.join(projectDir, VIDEO_IMPORT_DIR);
+  await mkdir(importDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const stem = path.basename(fileName, ext).slice(0, 96) || "video";
+  const videoPath = path.join(importDir, `${stamp}-${stem}${ext}`);
+  await writeRequestToFile(request, videoPath, MAX_IMPORT_BYTES);
+
+  if (url.searchParams.get("stream") === "1") {
+    await streamImportVideo(videoPath, response);
+    return;
+  }
+
+  try {
+    const result = await runProcess(path.join(projectDir, ".venv-ml/bin/python"), [
+      "-u",
+      "scripts/spriteify_video_pymatting.py",
+      videoPath,
+    ]);
+    const viewerRoot = viewerRootFromSpriteifyOutput(result.stdout);
+    await access(path.join(viewerRoot, "viewer.html"));
+    rootDir = viewerRoot;
+    sendJson(response, 200, {
+      ok: true,
+      video: videoPath,
+      viewer_root: rootDir,
+      project_dir: projectsDirForRoot(),
+      project_name: path.basename(rootDir),
+      url: viewerUrlForRoot(rootDir),
+      stdout: result.stdout,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Video import failed";
+    sendJson(response, 500, { error: message, video: videoPath });
+  }
+}
+
+async function streamImportVideo(videoPath, response) {
+  response.writeHead(200, {
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "Cache-Control": "no-cache",
+  });
+
+  sendImportEvent(response, {
+    type: "uploaded",
+    message: "Upload complete",
+    video: videoPath,
+  });
+
+  let stdout = "";
+  let stderr = "";
+  let stdoutBuffer = "";
+  let stderrBuffer = "";
+  try {
+    await runProcess(path.join(projectDir, ".venv-ml/bin/python"), [
+      "-u",
+      "scripts/spriteify_video_pymatting.py",
+      videoPath,
+    ], {
+      onStdout: (chunk) => {
+        stdout += chunk;
+        stdoutBuffer = consumeImportLines(stdoutBuffer + chunk, (line) => {
+          sendSpriteifyLine(response, line);
+        });
+      },
+      onStderr: (chunk) => {
+        stderr += chunk;
+        stderrBuffer = consumeImportLines(stderrBuffer + chunk, (line) => {
+          sendImportEvent(response, {
+            type: "log",
+            message: line,
+          });
+        });
+      },
+    });
+
+    const viewerRoot = viewerRootFromSpriteifyOutput(stdout);
+    await access(path.join(viewerRoot, "viewer.html"));
+    rootDir = viewerRoot;
+    sendImportEvent(response, {
+      type: "done",
+      message: "Opening new project",
+      video: videoPath,
+      viewer_root: rootDir,
+      project_dir: projectsDirForRoot(),
+      project_name: path.basename(rootDir),
+      url: viewerUrlForRoot(rootDir),
+    });
+  } catch (error) {
+    sendImportEvent(response, {
+      type: "error",
+      message: error instanceof Error ? error.message : "Video import failed",
+      stderr,
+    });
+  } finally {
+    response.end();
+  }
+}
+
 function resolveExportDir(value) {
   const raw = String(value || "").trim();
   if (!raw) {
@@ -589,7 +710,96 @@ function resolveExportDir(value) {
   return resolved;
 }
 
-function runProcess(command, args) {
+function sanitizeUploadName(value) {
+  const raw = path.basename(String(value || "video.mp4")).normalize("NFC");
+  const cleaned = raw
+    .replace(/[\/\\?%*:|"<>]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || "video.mp4";
+}
+
+function writeRequestToFile(request, filePath, maxBytes) {
+  return new Promise((resolve, reject) => {
+    let bytes = 0;
+    let settled = false;
+    const output = createWriteStream(filePath, { flags: "wx" });
+
+    function fail(error) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      output.destroy();
+      rm(filePath, { force: true }).catch(() => {}).finally(() => reject(error));
+    }
+
+    request.on("data", (chunk) => {
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        request.destroy();
+        fail(new Error("Video file is too large"));
+      }
+    });
+    request.on("error", fail);
+    output.on("error", fail);
+    output.on("finish", () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    });
+    request.pipe(output);
+  });
+}
+
+function viewerRootFromSpriteifyOutput(stdout) {
+  const match = String(stdout || "").match(/^Viewer:\s*(.+?)\s*$/m);
+  if (!match) {
+    throw new Error("Spriteify completed without reporting a viewer path");
+  }
+  return path.dirname(path.resolve(projectDir, match[1]));
+}
+
+function viewerUrlForRoot(viewerRoot) {
+  const projectName = encodeURIComponent(path.basename(viewerRoot));
+  return `/viewer.html?new=1&project=${projectName}`;
+}
+
+function sendImportEvent(response, event) {
+  response.write(`${JSON.stringify(event)}\n`);
+}
+
+function consumeImportLines(buffer, onLine) {
+  const lines = buffer.split(/\r?\n/);
+  const rest = lines.pop() || "";
+  for (const line of lines.map((item) => item.trim()).filter(Boolean)) {
+    onLine(line);
+  }
+  return rest;
+}
+
+function sendSpriteifyLine(response, line) {
+  const progress = line.match(/^Processed\s+(\d+)\/(\d+)/);
+  if (progress) {
+    const processed = Number(progress[1]);
+    const total = Number(progress[2]);
+    sendImportEvent(response, {
+      type: "progress",
+      message: `Recovering transparent frames ${processed}/${total}`,
+      processed,
+      total,
+      percent: Math.round((processed / total) * 100),
+    });
+    return;
+  }
+  sendImportEvent(response, {
+    type: "log",
+    message: line,
+  });
+}
+
+function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: projectDir,
@@ -597,10 +807,18 @@ function runProcess(command, args) {
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
+      const text = String(chunk);
+      stdout += text;
+      if (options.onStdout) {
+        options.onStdout(text);
+      }
     });
     child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
+      const text = String(chunk);
+      stderr += text;
+      if (options.onStderr) {
+        options.onStderr(text);
+      }
     });
     child.on("error", reject);
     child.on("close", (code) => {

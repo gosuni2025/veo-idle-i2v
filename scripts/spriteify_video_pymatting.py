@@ -47,7 +47,9 @@ def main() -> int:
     reset_dir(sprite_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    print("Extracting raw video frames", flush=True)
     extract_raw_frames(ffmpeg, video_path, raw_dir, args.max_frames)
+    print("Extracting chromakey alpha frames", flush=True)
     extract_chromakey_alpha(ffmpeg, video_path, keyed_dir, args)
 
     raw_frames = sorted(raw_dir.glob(PNG_GLOB))
@@ -57,6 +59,7 @@ def main() -> int:
     if not raw_frames:
         raise SystemExit("No frames were extracted.")
 
+    print(f"Recovering transparent foreground for {len(raw_frames)} frames", flush=True)
     stats = []
     for index, (raw_path, keyed_path) in enumerate(zip(raw_frames, keyed_frames, strict=True)):
         raw = np.asarray(Image.open(raw_path).convert("RGB"), dtype=np.float32) / 255.0
@@ -82,7 +85,7 @@ def main() -> int:
             }
         )
         if index == 0 or (index + 1) % 25 == 0 or index == len(raw_frames) - 1:
-            print(f"Processed {index + 1}/{len(raw_frames)}")
+            print(f"Processed {index + 1}/{len(raw_frames)}", flush=True)
 
     make_contact_sheet(sprite_dir, contact_sheet_path)
     metadata = {
@@ -188,7 +191,7 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         }
     )
     html = """<!doctype html>
-<html lang="en">
+<html lang="ko">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -254,13 +257,25 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     main {
       min-height: 0;
       display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
       place-items: center;
+      gap: 8px;
       padding: 14px;
+      overflow: auto;
+    }
+
+    .preview-tools {
+      width: min(100%, 1280px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      flex-wrap: wrap;
     }
 
     .stage {
       width: min(100%, 1280px);
-      max-width: 1280px;
+      max-width: none;
       aspect-ratio: 16 / 9;
       position: relative;
       overflow: hidden;
@@ -274,6 +289,43 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       background-position: 0 0, 0 12px, 12px -12px, -12px 0;
       background-size: 24px 24px;
       touch-action: none;
+    }
+
+    .stage.video-drop-target {
+      border-color: var(--accent);
+      outline: 2px dashed var(--accent);
+      outline-offset: 4px;
+    }
+
+    .stage.video-drop-target img,
+    .app.importing .stage img {
+      opacity: 0.12;
+    }
+
+    .stage.video-drop-target .crop,
+    .app.importing .stage .crop {
+      display: none !important;
+    }
+
+    .stage.video-drop-target::after,
+    .app.importing .stage::after {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      background: rgb(0 0 0 / 48%);
+      color: var(--text);
+      font-size: 15px;
+      font-weight: 700;
+      pointer-events: none;
+    }
+
+    .stage.video-drop-target::after {
+      content: "Drop video to import";
+    }
+
+    .app.importing .stage::after {
+      content: "Importing video";
     }
 
     img {
@@ -292,6 +344,37 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       background: var(--accent-soft);
       box-shadow: 0 0 0 9999px rgb(0 0 0 / 28%);
       pointer-events: none;
+    }
+
+    dialog.import-progress {
+      width: min(420px, calc(100vw - 32px));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      background: var(--panel);
+      color: var(--text);
+      box-shadow: 0 20px 60px rgb(0 0 0 / 44%);
+    }
+
+    dialog.import-progress::backdrop {
+      background: rgb(0 0 0 / 46%);
+    }
+
+    .import-progress h2 {
+      margin: 0 0 10px;
+      font-size: 15px;
+    }
+
+    .import-progress p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .import-progress progress {
+      width: 100%;
+      height: 14px;
+      accent-color: var(--accent);
     }
 
     .controls {
@@ -479,7 +562,6 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         padding: 8px;
       }
 
-      .stage,
       input[type="range"],
       .controls {
         width: 100%;
@@ -500,10 +582,17 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
 <body>
   <div class="app">
     <header>
-      <h1>PyMatting Sprite Viewer</h1>
-      <div class="meta"><span id="label">Loading</span> / <span id="frameTotal"></span> frames</div>
+      <h1>PyMatting 스프라이트 뷰어</h1>
+      <div class="meta"><span id="label">불러오는 중</span> / <span id="frameTotal"></span> 프레임</div>
     </header>
     <main>
+      <div class="preview-tools" aria-label="Preview zoom controls">
+        <button id="zoomOut" type="button">축소</button>
+        <span class="meta" id="previewZoomLabel">줌 100%</span>
+        <button id="zoomIn" type="button">확대</button>
+        <button id="zoomReset" type="button">원상태</button>
+        <button id="zoomActual" type="button">1:1</button>
+      </div>
       <div class="stage" id="stage">
         <img id="frame" src="" alt="PyMatting sprite frame">
         <div class="crop" id="cropOverlay"></div>
@@ -511,59 +600,74 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     </main>
     <footer>
       <div class="controls">
-        <button class="primary" id="play" type="button">Pause</button>
-        <button id="prev" type="button">Prev</button>
-        <button id="next" type="button">Next</button>
+        <button class="primary" id="play" type="button">일시정지</button>
+        <button id="prev" type="button">이전</button>
+        <button id="next" type="button">다음</button>
         <input id="scrub" type="range" min="0" value="0" step="1">
         <label>FPS <input id="fps" type="number" min="1" max="60" value="24" step="1"></label>
-        <label>Every <input id="frameStep" type="number" min="1" max="96" value="1" step="1"></label>
-        <label><input id="pingPong" type="checkbox"> Ping Pong</label>
-        <label><input id="loopSelected" type="checkbox"> Loop Selected</label>
-        <label><input id="hideDeselected" type="checkbox"> Hide Off</label>
-        <span class="meta" id="status">Ready</span>
+        <label>전체 N번째 <input id="frameStep" type="number" min="1" max="96" value="1" step="1"></label>
+        <label><input id="pingPong" type="checkbox"> 핑퐁</label>
+        <label><input id="loopSelected" type="checkbox"> 선택 반복</label>
+        <label><input id="hideDeselected" type="checkbox"> 꺼짐 숨김</label>
+        <span class="meta" id="status">준비됨</span>
       </div>
       <div class="controls">
-        <label>Start <input id="loopStart" type="number" min="1" value="1" step="1"></label>
-        <button id="setLoopStart" type="button">Set Start</button>
-        <label>End <input id="loopEnd" type="number" min="1" value="1" step="1"></label>
-        <button id="setLoopEnd" type="button">Set End</button>
-        <button id="duplicateFrame" type="button">Duplicate</button>
-        <button id="moveLeft" type="button">Move Left</button>
-        <button id="moveRight" type="button">Move Right</button>
-        <button id="sendEnd" type="button">To End</button>
-        <button id="reverseSelected" type="button">Reverse</button>
-        <button id="toggleDelete" type="button">Delete Slot</button>
-        <button id="restoreAll" type="button">Restore All</button>
+        <label>시작 <input id="loopStart" type="number" min="1" value="1" step="1"></label>
+        <button id="setLoopStart" type="button">시작 지정</button>
+        <label>끝 <input id="loopEnd" type="number" min="1" value="1" step="1"></label>
+        <button id="setLoopEnd" type="button">끝 지정</button>
+        <button id="duplicateFrame" type="button">복제</button>
+        <button id="moveLeft" type="button">왼쪽 이동</button>
+        <button id="moveRight" type="button">오른쪽 이동</button>
+        <button id="sendEnd" type="button">끝으로</button>
+        <button id="reverseSelected" type="button">반전</button>
+        <button id="selectAllCells" type="button">전체 선택</button>
+        <button id="deselectAllCells" type="button">선택 해제</button>
+        <button id="enableSelected" type="button">선택 켜기</button>
+        <button id="disableSelected" type="button">선택 끄기</button>
+        <label>선택 N번째 <input id="selectedFrameStep" type="number" min="1" max="96" value="2" step="1"></label>
+        <button id="enableSelectedEvery" type="button">N번째 켜기</button>
+        <button id="disableSelectedEvery" type="button">N번째 끄기</button>
+        <button id="keepSelectedEvery" type="button">N번째만 남기기</button>
+        <button id="keepSelectedEnabled" type="button">선택 켜짐만 남기기</button>
+        <button id="toggleDelete" type="button">슬롯 삭제</button>
+        <button id="restoreAll" type="button">전체 복원</button>
       </div>
       <div class="timeline" id="timeline" aria-label="Frame timeline"></div>
       <div class="controls">
-        <label>Pad <input id="pad" type="number" min="0" max="256" value="16" step="1"></label>
-        <button id="fitCurrent" type="button">Fit Frame</button>
-        <button id="fitAll" type="button">Fit All</button>
-        <button id="fullCrop" type="button">Full</button>
-        <button id="copyCommand" type="button">Copy Cmd</button>
-        <label>Export <input id="exportDir" type="text" value="exports/viewer-project"></label>
+        <label>여백 <input id="pad" type="number" min="0" max="256" value="16" step="1"></label>
+        <button id="fitCurrent" type="button">현재 맞춤</button>
+        <button id="fitAll" type="button">전체 맞춤</button>
+        <button id="fullCrop" type="button">전체 영역</button>
+        <button id="copyCommand" type="button">명령 복사</button>
+        <label>출력 W <input id="outputWidth" type="number" min="1" max="32768" value="1" step="1">px</label>
+        <label>출력 H <input id="outputHeight" type="number" min="1" max="32768" value="1" step="1">px</label>
+        <label><input id="keepOutputAspect" type="checkbox" checked> 비율 유지</label>
+        <button id="matchCropSize" type="button">크롭=출력</button>
+        <label>내보내기 <input id="exportDir" type="text" value="exports/viewer-project"></label>
         <select id="exportDirSelect" aria-label="Export folders"></select>
-        <label><input id="overwriteExport" type="checkbox"> Overwrite</label>
-        <button id="exportCropSequence" type="button">Export Crop+Sequence</button>
-        <button id="openExportFolder" type="button">Open Finder</button>
+        <label><input id="overwriteExport" type="checkbox"> 덮어쓰기</label>
+        <button id="exportCropSequence" type="button">크롭 내보내기</button>
+        <button id="openExportFolder" type="button">Finder 열기</button>
       </div>
       <div class="controls">
-        <label>Folder <select id="viewerSelect" aria-label="Sprite viewer folders"></select></label>
-        <button id="refreshViewers" type="button">Refresh Folders</button>
-        <button id="openViewerProject" type="button">New Project</button>
+        <button id="importVideo" type="button">비디오 가져오기</button>
+        <input id="videoFile" type="file" accept=".mp4,.mov,.m4v,.webm,video/mp4,video/quicktime,video/webm" hidden>
+        <label>폴더 <select id="viewerSelect" aria-label="Sprite viewer folders"></select></label>
+        <button id="refreshViewers" type="button">폴더 새로고침</button>
+        <button id="openViewerProject" type="button">새 프로젝트</button>
       </div>
       <div class="controls">
-        <label>Project <input id="projectName" type="text" value="viewer-project"></label>
+        <label>프로젝트 <input id="projectName" type="text" value="viewer-project"></label>
         <select id="projectSelect" aria-label="Saved projects"></select>
-        <button id="refreshProjects" type="button">Refresh</button>
-        <button id="saveProject" type="button">Save Project</button>
-        <button id="saveProjectAs" type="button">Save As</button>
-        <button id="loadProject" type="button">Load Project</button>
+        <button id="refreshProjects" type="button">새로고침</button>
+        <button id="saveProject" type="button">프로젝트 저장</button>
+        <button id="saveProjectAs" type="button">다른 이름 저장</button>
+        <button id="loadProject" type="button">불러오기</button>
       </div>
       <div class="controls">
-        <span class="meta project-meta">Work <span id="workFolder">Loading</span></span>
-        <span class="meta project-meta">Projects <span id="projectFolder">Loading</span></span>
+        <span class="meta project-meta">작업 폴더 <span id="workFolder">불러오는 중</span></span>
+        <span class="meta project-meta">프로젝트 폴더 <span id="projectFolder">불러오는 중</span></span>
       </div>
       <div class="controls">
         <label>X <input id="cropX" type="number" min="0" step="1"></label>
@@ -573,10 +677,18 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       </div>
     </footer>
   </div>
+  <dialog class="import-progress" id="importProgressDialog" aria-labelledby="importProgressTitle">
+    <h2 id="importProgressTitle">비디오 가져오는 중</h2>
+    <p id="importProgressText">준비 중</p>
+    <progress id="importProgressBar" max="100" value="0"></progress>
+    <div class="meta" id="importProgressDetail"></div>
+    <button id="importProgressClose" type="button" hidden>닫기</button>
+  </dialog>
   <script>
     const config = __CONFIG__;
     const frameCount = config.frameCount;
     const frameNames = config.frames;
+    const app = document.querySelector(".app");
     const frame = document.getElementById("frame");
     const stage = document.getElementById("stage");
     const cropOverlay = document.getElementById("cropOverlay");
@@ -586,6 +698,11 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     const scrub = document.getElementById("scrub");
     const label = document.getElementById("label");
     const status = document.getElementById("status");
+    const importProgressDialog = document.getElementById("importProgressDialog");
+    const importProgressText = document.getElementById("importProgressText");
+    const importProgressBar = document.getElementById("importProgressBar");
+    const importProgressDetail = document.getElementById("importProgressDetail");
+    const importProgressClose = document.getElementById("importProgressClose");
     const timeline = document.getElementById("timeline");
     const fpsInput = document.getElementById("fps");
     const frameStepInput = document.getElementById("frameStep");
@@ -599,12 +716,32 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     const moveRightButton = document.getElementById("moveRight");
     const sendEndButton = document.getElementById("sendEnd");
     const reverseSelectedButton = document.getElementById("reverseSelected");
+    const selectAllCellsButton = document.getElementById("selectAllCells");
+    const deselectAllCellsButton = document.getElementById("deselectAllCells");
+    const enableSelectedButton = document.getElementById("enableSelected");
+    const disableSelectedButton = document.getElementById("disableSelected");
+    const selectedFrameStepInput = document.getElementById("selectedFrameStep");
+    const enableSelectedEveryButton = document.getElementById("enableSelectedEvery");
+    const disableSelectedEveryButton = document.getElementById("disableSelectedEvery");
+    const keepSelectedEveryButton = document.getElementById("keepSelectedEvery");
+    const keepSelectedEnabledButton = document.getElementById("keepSelectedEnabled");
     const toggleDeleteButton = document.getElementById("toggleDelete");
     const projectNameInput = document.getElementById("projectName");
     const projectSelect = document.getElementById("projectSelect");
     const viewerSelect = document.getElementById("viewerSelect");
+    const importVideoButton = document.getElementById("importVideo");
+    const videoFileInput = document.getElementById("videoFile");
     const workFolder = document.getElementById("workFolder");
     const projectFolder = document.getElementById("projectFolder");
+    const zoomOutButton = document.getElementById("zoomOut");
+    const zoomInButton = document.getElementById("zoomIn");
+    const zoomResetButton = document.getElementById("zoomReset");
+    const zoomActualButton = document.getElementById("zoomActual");
+    const previewZoomLabel = document.getElementById("previewZoomLabel");
+    const outputWidthInput = document.getElementById("outputWidth");
+    const outputHeightInput = document.getElementById("outputHeight");
+    const keepOutputAspectInput = document.getElementById("keepOutputAspect");
+    const matchCropSizeButton = document.getElementById("matchCropSize");
     const exportDirInput = document.getElementById("exportDir");
     const exportDirSelect = document.getElementById("exportDirSelect");
     const overwriteExportInput = document.getElementById("overwriteExport");
@@ -615,6 +752,53 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       width: document.getElementById("cropW"),
       height: document.getElementById("cropH"),
     };
+    const buttonTitles = {
+      play: "재생/일시정지: 현재 on 상태이고 루프 범위 안에 있는 셀을 FPS 설정에 맞춰 미리보기로 재생하거나 멈춥니다.",
+      prev: "이전 프레임: 현재 미리보기 순서에서 이전 on 셀로 이동합니다.",
+      next: "다음 프레임: 현재 미리보기 순서에서 다음 on 셀로 이동합니다.",
+      zoomOut: "축소: 프리뷰 영역을 한 단계 작게 봅니다. 내보내기 픽셀 크기는 바뀌지 않습니다.",
+      zoomIn: "확대: 프리뷰 영역을 한 단계 크게 봅니다. 픽셀 확인용 화면 확대입니다.",
+      zoomReset: "원상태: 프리뷰 줌을 처음 열었을 때의 100% 상태로 되돌립니다.",
+      zoomActual: "1:1: 원본 프레임 픽셀을 화면 CSS 픽셀과 1:1 크기로 표시합니다.",
+      setLoopStart: "시작 지정: 현재 활성 슬롯을 루프와 내보내기 범위의 시작점으로 설정합니다.",
+      setLoopEnd: "끝 지정: 현재 활성 슬롯을 루프와 내보내기 범위의 끝점으로 설정합니다.",
+      duplicateFrame: "복제: 선택된 셀들을 바로 뒤에 복사합니다. 같은 원본 프레임을 재사용하므로 이미지 파일은 중복 저장하지 않습니다.",
+      moveLeft: "왼쪽 이동: 선택된 셀 묶음을 타임라인에서 한 칸 왼쪽으로 이동합니다.",
+      moveRight: "오른쪽 이동: 선택된 셀 묶음을 타임라인에서 한 칸 오른쪽으로 이동합니다.",
+      sendEnd: "끝으로: 선택된 셀 묶음을 타임라인 맨 끝으로 보내고 루프 끝도 새 마지막 슬롯으로 맞춥니다.",
+      reverseSelected: "반전: 선택된 셀들의 순서를 그 자리에서 뒤집습니다.",
+      selectAllCells: "전체 선택: 모든 타임라인 셀을 선택합니다. 단축키 Cmd+A.",
+      deselectAllCells: "선택 해제: 현재 선택된 셀을 모두 해제합니다. 단축키 Cmd+D.",
+      enableSelected: "선택 켜기: 선택된 셀을 모두 on으로 바꿔 미리보기와 내보내기에 포함합니다.",
+      disableSelected: "선택 끄기: 선택된 셀을 모두 off로 바꿔 미리보기와 내보내기에서 제외합니다.",
+      enableSelectedEvery: "N번째 켜기: 선택된 셀 목록 안에서 선택 N번째 값마다 해당하는 셀만 on으로 바꿉니다.",
+      disableSelectedEvery: "N번째 끄기: 선택된 셀 목록 안에서 선택 N번째 값마다 해당하는 셀만 off로 바꿉니다.",
+      keepSelectedEvery: "N번째만 남기기: 선택된 셀 목록 안에서 선택 N번째 값마다 해당하는 셀만 on으로 두고, 나머지 선택 셀은 off로 바꿉니다.",
+      keepSelectedEnabled: "선택 켜짐만 남기기: 선택되어 있으면서 on인 셀만 남기고 나머지 슬롯을 삭제합니다.",
+      toggleDelete: "슬롯 삭제: 선택된 셀을 타임라인에서 삭제합니다. 원본 PNG 파일은 삭제하지 않습니다.",
+      restoreAll: "전체 복원: 슬롯 순서, 복제, on/off 선택, 루프 범위를 처음 불러온 상태로 되돌립니다.",
+      fitCurrent: "현재 맞춤: 현재 보이는 프레임의 알파 영역을 기준으로 크롭 박스를 맞춥니다.",
+      fitAll: "전체 맞춤: 미리보기 대상 프레임 전체의 알파 영역을 스캔해 공통 크롭 박스를 맞춥니다.",
+      fullCrop: "전체 영역: 크롭 박스를 프레임 전체 크기로 되돌립니다.",
+      copyCommand: "명령 복사: 현재 크롭과 타임라인 설정으로 crop-sprites 명령을 클립보드에 복사합니다.",
+      matchCropSize: "크롭=출력: 내보내기 PNG 크기를 현재 크롭 픽셀 크기와 같게 맞춥니다.",
+      exportCropSequence: "크롭 내보내기: 백엔드 서버로 현재 크롭과 on 슬롯 시퀀스를 내보내 게임용 PNG와 JSON을 생성합니다.",
+      openExportFolder: "Finder 열기: 현재 내보내기 폴더를 Finder에서 엽니다.",
+      importVideo: "비디오 가져오기: MP4/MOV/WebM 파일을 업로드해 PyMatting 스프라이트 뷰어 프로젝트로 변환합니다.",
+      refreshViewers: "폴더 새로고침: 생성된 스프라이트 뷰어 폴더 목록을 다시 불러옵니다.",
+      openViewerProject: "새 프로젝트: 선택한 스프라이트 뷰어 폴더를 새 작업 대상으로 엽니다.",
+      refreshProjects: "새로고침: 저장된 프로젝트 목록을 다시 불러옵니다.",
+      saveProject: "프로젝트 저장: 현재 크롭, 슬롯 순서, on/off, 선택 상태, 내보내기 설정을 저장합니다. 단축키 Cmd+S.",
+      saveProjectAs: "다른 이름 저장: 현재 편집 상태를 새 프로젝트 이름으로 저장합니다.",
+      loadProject: "불러오기: 선택한 저장 프로젝트의 크롭과 타임라인 편집 상태를 불러옵니다.",
+      importProgressClose: "닫기: 비디오 가져오기 진행 창을 닫습니다.",
+    };
+    for (const [id, title] of Object.entries(buttonTitles)) {
+      const button = document.getElementById(id);
+      if (button) {
+        button.title = title;
+      }
+    }
     let index = 0;
     let playing = true;
     let lastTick = performance.now();
@@ -630,12 +814,26 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     const frameSlots = [];
 
     stage.style.aspectRatio = `${config.frameWidth} / ${config.frameHeight}`;
+    let previewZoom = 1;
 
-    function resizeStage() {
+    function baseStageWidth() {
       const availableWidth = Math.max(240, window.innerWidth - 28);
       const availableHeight = Math.max(240, window.innerHeight - 184);
-      const width = Math.min(1280, availableWidth, availableHeight * config.frameWidth / config.frameHeight);
-      stage.style.width = `${Math.max(240, Math.floor(width))}px`;
+      return Math.max(240, Math.min(1280, availableWidth, availableHeight * config.frameWidth / config.frameHeight));
+    }
+
+    function applyPreviewZoom() {
+      stage.style.width = `${Math.max(1, Math.floor(baseStageWidth() * previewZoom))}px`;
+      previewZoomLabel.textContent = `줌 ${Math.round(previewZoom * 100)}%`;
+    }
+
+    function setPreviewZoom(nextZoom) {
+      previewZoom = clamp(Number(nextZoom) || 1, 0.25, 16);
+      applyPreviewZoom();
+    }
+
+    function resizeStage() {
+      applyPreviewZoom();
     }
     window.addEventListener("resize", resizeStage);
 
@@ -675,10 +873,14 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       displaySourceFrame(sourceFrame - 1);
     }
 
-    function selectedIndices() {
-      const valid = Array.from(selectedSlotIndices)
+    function rawSelectedIndices() {
+      return Array.from(selectedSlotIndices)
         .filter((slotIndex) => Number.isInteger(slotIndex) && slotIndex >= 0 && slotIndex < sequenceFrames.length)
         .sort((a, b) => a - b);
+    }
+
+    function selectedIndices() {
+      const valid = rawSelectedIndices();
       if (valid.length) {
         return valid;
       }
@@ -711,6 +913,18 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       lastClickedSlotIndex = clamp(cursor, 0, sequenceFrames.length - 1);
     }
 
+    function selectAllCells() {
+      setSelectedIndices(Array.from({ length: sequenceFrames.length }, (_, i) => i), sequenceCursor);
+      updateTimeline();
+      status.textContent = `전체 ${sequenceFrames.length}개 셀 선택`;
+    }
+
+    function deselectAllCells() {
+      selectedSlotIndices = new Set();
+      updateTimeline();
+      status.textContent = "셀 선택 해제";
+    }
+
     function selectSlotFromClick(slotIndex, event) {
       const cursor = clamp(slotIndex, 0, sequenceFrames.length - 1);
       if (event.metaKey || event.ctrlKey) {
@@ -740,7 +954,7 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         setSelectedIndices([cursor], cursor);
       }
       playing = false;
-      play.textContent = "Play";
+      play.textContent = "재생";
       setSequenceCursor(cursor);
     }
 
@@ -749,6 +963,7 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     }
 
     function setCrop(nextCrop) {
+      const previousCrop = crop;
       const x = clamp(Math.round(nextCrop.x), 0, config.frameWidth - 1);
       const y = clamp(Math.round(nextCrop.y), 0, config.frameHeight - 1);
       const width = clamp(Math.round(nextCrop.width), 1, config.frameWidth - x);
@@ -758,6 +973,7 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       cropInputs.y.value = String(y);
       cropInputs.width.value = String(width);
       cropInputs.height.value = String(height);
+      syncOutputSizeAfterCrop(previousCrop);
       renderCrop();
     }
 
@@ -796,6 +1012,7 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       loopStartInput.max = String(sequenceLength);
       loopEndInput.max = String(sequenceLength);
       frameStepInput.max = String(sequenceLength);
+      selectedFrameStepInput.max = String(sequenceLength);
       loopStartInput.value = String(loopStart);
       loopEndInput.value = String(loopEnd);
       document.getElementById("frameTotal").textContent = `${frameCount} source / ${sequenceLength} slots`;
@@ -803,6 +1020,63 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
 
     function frameStep() {
       return clamp(Math.round(Number(frameStepInput.value) || 1), 1, sequenceFrames.length);
+    }
+
+    function selectedFrameStep() {
+      return clamp(Math.round(Number(selectedFrameStepInput.value) || 1), 1, sequenceFrames.length);
+    }
+
+    function outputDimension(input, fallback) {
+      return clamp(Math.round(Number(input.value) || fallback), 1, 32768);
+    }
+
+    function outputSize() {
+      return {
+        width: outputDimension(outputWidthInput, crop.width),
+        height: outputDimension(outputHeightInput, crop.height),
+      };
+    }
+
+    function setOutputSize(size) {
+      outputWidthInput.value = String(outputDimension({ value: size.width }, crop.width));
+      outputHeightInput.value = String(outputDimension({ value: size.height }, crop.height));
+    }
+
+    function outputMatchesCrop(targetCrop) {
+      const size = outputSize();
+      return size.width === targetCrop.width && size.height === targetCrop.height;
+    }
+
+    function syncOutputSizeAfterCrop(previousCrop) {
+      if (outputMatchesCrop(previousCrop)) {
+        setOutputSize({ width: crop.width, height: crop.height });
+      }
+    }
+
+    function setOutputWidth(value) {
+      const next = Number(value);
+      if (!Number.isFinite(next) || value === "") {
+        return;
+      }
+      const width = clamp(Math.round(next), 1, 32768);
+      if (keepOutputAspectInput.checked) {
+        setOutputSize({ width, height: Math.max(1, Math.round(width * crop.height / crop.width)) });
+        return;
+      }
+      setOutputSize({ width, height: outputSize().height });
+    }
+
+    function setOutputHeight(value) {
+      const next = Number(value);
+      if (!Number.isFinite(next) || value === "") {
+        return;
+      }
+      const height = clamp(Math.round(next), 1, 32768);
+      if (keepOutputAspectInput.checked) {
+        setOutputSize({ width: Math.max(1, Math.round(height * crop.width / crop.height)), height });
+        return;
+      }
+      setOutputSize({ width: outputSize().width, height });
     }
 
     function usesSlot(slotPosition) {
@@ -846,7 +1120,7 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
           (slotPosition - loopStart) % step === 0;
       }
       playing = false;
-      play.textContent = "Play";
+      play.textContent = "재생";
       syncPlaybackDirectionAtEndpoint();
       updateTimeline();
       status.textContent = `Selected every ${step}`;
@@ -936,7 +1210,7 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         header.className = "frame-header";
         header.draggable = true;
         header.textContent = String(sourceFrame);
-        header.title = `slot ${slotIndex + 1}, source ${sourceFrame}: ${frameNames[sourceFrame - 1]}`;
+        header.title = `셀 선택/이동: 슬롯 ${slotIndex + 1}, 원본 프레임 ${sourceFrame}. 클릭하면 이 셀만 선택하고, Shift+클릭은 범위 선택, Cmd+클릭은 선택 추가/해제, 드래그는 순서 이동입니다. 파일: ${frameNames[sourceFrame - 1]}`;
         header.addEventListener("click", (event) => {
           selectSlotFromClick(slotIndex, event);
         });
@@ -956,10 +1230,10 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         toggle.type = "button";
         toggle.className = "frame-toggle";
         toggle.setAttribute("aria-pressed", slotEnabled[slotIndex] ? "true" : "false");
-        toggle.title = `slot ${slotIndex + 1}: ${slotEnabled[slotIndex] ? "included" : "excluded"} from preview/export`;
+        toggle.title = `셀 on/off: 슬롯 ${slotIndex + 1}을 미리보기와 내보내기에 ${slotEnabled[slotIndex] ? "포함" : "제외"}합니다. 클릭하면 현재 셀의 on/off 상태가 바뀝니다.`;
         toggle.addEventListener("click", () => {
           playing = false;
-          play.textContent = "Play";
+          play.textContent = "재생";
           slotEnabled[slotIndex] = !slotEnabled[slotIndex];
           setSelectedIndices([slotIndex], slotIndex);
           setSequenceCursor(slotIndex);
@@ -1103,6 +1377,67 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       status.textContent = `Reversed ${selected.length} selected cells`;
     }
 
+    function setSelectedCellsEnabled(enabled) {
+      const selected = selectedIndices();
+      for (const slotIndex of selected) {
+        slotEnabled[slotIndex] = enabled;
+      }
+      playing = false;
+      play.textContent = "재생";
+      syncPlaybackDirectionAtEndpoint();
+      updateTimeline();
+      status.textContent = `${enabled ? "Enabled" : "Disabled"} ${selected.length} selected cells`;
+    }
+
+    function setSelectedEveryCellsEnabled(enabled) {
+      const selected = selectedIndices();
+      const step = selectedFrameStep();
+      const every = selected.filter((_, position) => position % step === 0);
+      for (const slotIndex of every) {
+        slotEnabled[slotIndex] = enabled;
+      }
+      playing = false;
+      play.textContent = "재생";
+      syncPlaybackDirectionAtEndpoint();
+      updateTimeline();
+      status.textContent = `${enabled ? "Enabled" : "Disabled"} ${every.length}/${selected.length} selected cells every ${step}`;
+    }
+
+    function keepOnlySelectedEveryCellsEnabled() {
+      const selected = selectedIndices();
+      const step = selectedFrameStep();
+      let kept = 0;
+      selected.forEach((slotIndex, position) => {
+        const enabled = position % step === 0;
+        slotEnabled[slotIndex] = enabled;
+        if (enabled) {
+          kept += 1;
+        }
+      });
+      playing = false;
+      play.textContent = "재생";
+      syncPlaybackDirectionAtEndpoint();
+      updateTimeline();
+      status.textContent = `선택 셀 ${selected.length}개 중 ${kept}개만 on`;
+    }
+
+    function keepSelectedEnabledSlots() {
+      const keep = selectedIndices().filter((slotIndex) => slotEnabled[slotIndex]);
+      if (!keep.length) {
+        status.textContent = "No selected on cells";
+        return;
+      }
+      sequenceFrames = keep.map((slotIndex) => sequenceFrames[slotIndex]);
+      slotEnabled = Array.from({ length: sequenceFrames.length }, () => true);
+      loopStart = 1;
+      loopEnd = sequenceFrames.length;
+      sequenceCursor = 0;
+      setSelectedIndices(Array.from({ length: sequenceFrames.length }, (_, i) => i), sequenceCursor);
+      renderTimeline();
+      setSequenceCursor(sequenceCursor);
+      status.textContent = `Kept ${sequenceFrames.length} selected on cells`;
+    }
+
     function moveSlotTo(from, to) {
       if (from === to || from < 0 || from >= sequenceFrames.length || to < 0 || to >= sequenceFrames.length) {
         return;
@@ -1158,11 +1493,11 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         item.toggle.classList.toggle("enabled", isEnabled);
         item.toggle.classList.toggle("disabled", !isEnabled);
         item.toggle.setAttribute("aria-pressed", isEnabled ? "true" : "false");
-        item.toggle.title = `slot ${slotPosition}: ${isEnabled ? "included" : "excluded"} from preview/export`;
+        item.toggle.title = `셀 on/off: 슬롯 ${slotPosition}을 미리보기와 내보내기에 ${isEnabled ? "포함" : "제외"}합니다. 클릭하면 현재 셀의 on/off 상태가 바뀝니다.`;
       }
       const exportSlotCount = exportSlots().length;
       const uniqueExportCount = new Set(exportSlots().map((slotIndex) => sequenceFrames[slotIndex])).size;
-      const selectedCount = selectedIndices().length;
+      const selectedCount = rawSelectedIndices().length;
       if (loopSelectedInput.checked) {
         const previewSlotCount = previewSlots().length;
         status.textContent = `${previewSlotCount} preview slots / ${exportSlotCount} export slots; ${selectedCount} cells selected`;
@@ -1194,7 +1529,7 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         return;
       }
       playing = false;
-      play.textContent = "Play";
+      play.textContent = "재생";
       drawing = true;
       drawStart = pointFromEvent(event);
       stage.setPointerCapture(event.pointerId);
@@ -1251,10 +1586,13 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     }
 
     function cropPayload() {
+      const size = outputSize();
       return {
         frame_size: { width: config.frameWidth, height: config.frameHeight },
         frame_count: frameCount,
         source_frame_dir: config.frameDir,
+        output_size: size,
+        output_frame_size: size,
         crop,
         timeline: timelinePayload(),
       };
@@ -1270,6 +1608,7 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         frame_count: frameCount,
         source_frame_dir: config.frameDir,
         out_dir: config.outDir,
+        output_size: outputSize(),
         frame_names: frameNames.slice(),
         crop: { ...crop },
         timeline: timelinePayload(),
@@ -1277,10 +1616,13 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
           current_slot: sequenceCursor + 1,
           sequence_frames: sequenceFrames.slice(),
           slot_enabled: slotEnabled.slice(),
-          selected_slot_indices: selectedIndices().map((slotIndex) => slotIndex + 1),
+          selected_slot_indices: rawSelectedIndices().map((slotIndex) => slotIndex + 1),
           selection_anchor: lastClickedSlotIndex + 1,
           hide_deselected: hideDeselectedInput.checked,
           loop_selected: loopSelectedInput.checked,
+          output_size: outputSize(),
+          keep_output_aspect: keepOutputAspectInput.checked,
+          preview_zoom: previewZoom,
           export_dir: exportDirInput.value,
           overwrite_export: overwriteExportInput.checked,
         },
@@ -1295,11 +1637,34 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       projectNameInput.value = (value || "viewer-project").replace(/\\.json$/i, "");
     }
 
+    function startupProjectName() {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("new") !== "1") {
+        return "";
+      }
+      return (params.get("project") || "viewer-project")
+        .replace(/\\.json$/i, "")
+        .replace(/[\\\\/?%*:|"<>]/g, "_")
+        .trim();
+    }
+
+    function applyStartupProjectDefaults() {
+      const name = startupProjectName();
+      if (!name) {
+        return;
+      }
+      setProjectName(name);
+      exportDirInput.value = `exports/${name}`;
+      overwriteExportInput.checked = false;
+      status.textContent = `New project: ${name}`;
+    }
+
     function shellQuote(value) {
       return JSON.stringify(value).replaceAll("$", "\\$").replaceAll("`", "\\`");
     }
 
     function commandText() {
+      const size = outputSize();
       const parts = [
         "cd",
         shellQuote(config.projectDir),
@@ -1323,6 +1688,10 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         String(loopEnd),
         "--frame-step",
         String(frameStep()),
+        "--out-width",
+        String(size.width),
+        "--out-height",
+        String(size.height),
         "--sequence-frames",
         shellQuote(exportSourceFrameNumbers().join(",")),
         "--fps",
@@ -1400,6 +1769,151 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       window.location.href = `${result.url || "/viewer.html"}?t=${Date.now()}`;
     }
 
+    function isVideoFile(file) {
+      return Boolean(file && (
+        /^video\\//.test(file.type || "") ||
+        /\\.(mp4|mov|m4v|webm)$/i.test(file.name || "")
+      ));
+    }
+
+    function eventHasFiles(event) {
+      const transfer = event.dataTransfer;
+      if (!transfer) {
+        return false;
+      }
+      return Array.from(transfer.items || []).some((item) => item.kind === "file") ||
+        (transfer.files && transfer.files.length > 0);
+    }
+
+    function droppedVideoFile(event) {
+      return Array.from(event.dataTransfer?.files || []).find(isVideoFile) || null;
+    }
+
+    function showImportProgress(text) {
+      app.classList.add("importing");
+      importProgressText.textContent = text;
+      importProgressDetail.textContent = "";
+      importProgressClose.hidden = true;
+      importProgressBar.max = 100;
+      importProgressBar.value = 0;
+      if (!importProgressDialog.open) {
+        if (importProgressDialog.showModal) {
+          importProgressDialog.showModal();
+        } else {
+          importProgressDialog.setAttribute("open", "");
+        }
+      }
+    }
+
+    function showImportError(error) {
+      app.classList.remove("importing");
+      importProgressText.textContent = error instanceof Error ? error.message : "Video import failed";
+      importProgressBar.value = 0;
+      importProgressDetail.textContent = "Failed";
+      importProgressClose.hidden = false;
+    }
+
+    function setImportProgress(text, percent = null) {
+      importProgressText.textContent = text;
+      if (Number.isFinite(percent)) {
+        const value = clamp(Math.round(percent), 0, 100);
+        importProgressBar.value = value;
+        importProgressDetail.textContent = `${value}%`;
+      } else {
+        importProgressBar.removeAttribute("value");
+        importProgressDetail.textContent = "";
+      }
+    }
+
+    function uploadVideoFile(file) {
+      return new Promise((resolve, reject) => {
+        const request = new XMLHttpRequest();
+        request.open("POST", `/api/import-video?stream=1&name=${encodeURIComponent(file.name || "video.mp4")}`);
+        request.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+        let seenLength = 0;
+        let responseBuffer = "";
+        let doneEvent = null;
+
+        function handleImportEvent(event) {
+          if (event.type === "uploaded") {
+            setImportProgress("Upload complete; extracting frames");
+          } else if (event.type === "progress") {
+            setImportProgress(event.message || "Recovering transparent frames", event.percent);
+            importProgressDetail.textContent = `${event.processed}/${event.total} frames`;
+          } else if (event.type === "log") {
+            importProgressText.textContent = event.message || "Processing frames";
+          } else if (event.type === "done") {
+            doneEvent = event;
+            setImportProgress(event.message || "Opening new project", 100);
+          } else if (event.type === "error") {
+            reject(new Error(event.message || "Video import failed"));
+          }
+        }
+
+        function readImportEvents() {
+          responseBuffer += request.responseText.slice(seenLength);
+          seenLength = request.responseText.length;
+          const lines = responseBuffer.split("\\n");
+          responseBuffer = lines.pop() || "";
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+              continue;
+            }
+            try {
+              handleImportEvent(JSON.parse(trimmed));
+            } catch (error) {
+              reject(error);
+            }
+          }
+        }
+
+        request.upload.addEventListener("progress", (event) => {
+          if (event.lengthComputable && event.total > 0) {
+            setImportProgress(`Uploading ${file.name || "video"}`, (event.loaded / event.total) * 100);
+          }
+        });
+        request.upload.addEventListener("load", () => {
+          setImportProgress("Processing frames");
+        });
+        request.addEventListener("progress", readImportEvents);
+        request.addEventListener("load", () => {
+          readImportEvents();
+          if (responseBuffer.trim()) {
+            try {
+              handleImportEvent(JSON.parse(responseBuffer));
+            } catch (error) {
+              reject(error);
+              return;
+            }
+            responseBuffer = "";
+          }
+          if (request.status >= 200 && request.status < 300) {
+            resolve(doneEvent || {});
+          } else {
+            reject(new Error(`HTTP ${request.status}`));
+          }
+        });
+        request.addEventListener("error", () => reject(new Error("Video upload failed")));
+        request.addEventListener("abort", () => reject(new Error("Video upload cancelled")));
+        request.send(file);
+      });
+    }
+
+    async function importVideoFile(file) {
+      if (!isVideoFile(file)) {
+        throw new Error("Drop an MP4, MOV, M4V, or WEBM video");
+      }
+      playing = false;
+      play.textContent = "재생";
+      showImportProgress(`Uploading ${file.name || "video"}`);
+      status.textContent = `Uploading ${file.name || "video"}`;
+      const data = await uploadVideoFile(file);
+      setImportProgress("Processing frames");
+      status.textContent = "Opening imported video";
+      window.location.href = `${data.url || "/viewer.html"}?t=${Date.now()}`;
+    }
+
     async function refreshExportDirs() {
       const data = await requestJson("/api/export-dirs");
       exportDirSelect.replaceChildren();
@@ -1440,7 +1954,8 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
           export: cropPayload(),
         }),
       });
-      status.textContent = `Exported ${result.frame_count} frames / ${result.unique_frame_count} images`;
+      const size = result.output_frame_size ? ` @ ${result.output_frame_size.width}x${result.output_frame_size.height}` : "";
+      status.textContent = `Exported ${result.frame_count} frames / ${result.unique_frame_count} images${size}`;
       refreshExportDirs().catch(() => {});
     }
 
@@ -1628,6 +2143,7 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       pingPongInput.checked = Boolean(timeline.ping_pong);
       loopSelectedInput.checked = Boolean(editor.loop_selected ?? timeline.loop_selected ?? data.loop_selected ?? false);
       hideDeselectedInput.checked = Boolean(editor.hide_deselected ?? data.hide_deselected ?? false);
+      keepOutputAspectInput.checked = Boolean(editor.keep_output_aspect ?? data.keep_output_aspect ?? true);
       exportDirInput.value = editor.export_dir || data.export_dir || exportDirInput.value;
       overwriteExportInput.checked = Boolean(editor.overwrite_export ?? data.overwrite_export ?? false);
       const currentSlot = clamp(Number(editor.current_slot || data.current_slot || 1) - 1, 0, sequenceFrames.length - 1);
@@ -1638,8 +2154,18 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       if (data.crop) {
         setCrop(data.crop);
       }
+      const savedOutputSize = editor.output_size || data.output_size || data.output_frame_size;
+      if (savedOutputSize) {
+        setOutputSize(savedOutputSize);
+      } else {
+        const legacyScale = clamp(Number(editor.output_scale_percent ?? data.output_scale_percent ?? 100) || 100, 1, 100) / 100;
+        setOutputSize({ width: Math.round(crop.width * legacyScale), height: Math.round(crop.height * legacyScale) });
+      }
+      if (Number.isFinite(Number(editor.preview_zoom))) {
+        setPreviewZoom(Number(editor.preview_zoom));
+      }
       playing = false;
-      play.textContent = "Play";
+      play.textContent = "재생";
       setSequenceCursor(currentSlot);
       status.textContent = "Project loaded";
     }
@@ -1715,10 +2241,17 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
 
     play.addEventListener("click", () => {
       playing = !playing;
-      play.textContent = playing ? "Pause" : "Play";
+      play.textContent = playing ? "일시정지" : "재생";
     });
     prev.addEventListener("click", () => stepFrame(-1));
     next.addEventListener("click", () => stepFrame(1));
+    timeline.addEventListener("wheel", (event) => {
+      if (!event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+        return;
+      }
+      event.preventDefault();
+      timeline.scrollLeft += event.deltaY;
+    }, { passive: false });
     document.addEventListener("keydown", (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
@@ -1737,16 +2270,26 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       if (isTyping) {
         return;
       }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        selectAllCells();
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "d") {
+        event.preventDefault();
+        deselectAllCells();
+        return;
+      }
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         event.preventDefault();
         playing = false;
-        play.textContent = "Play";
+        play.textContent = "재생";
         stepFrame(event.key === "ArrowLeft" ? -1 : 1);
       }
     });
     scrub.addEventListener("input", () => {
       playing = false;
-      play.textContent = "Play";
+      play.textContent = "재생";
       setSequenceCursor(Number(scrub.value));
     });
     fpsInput.addEventListener("change", () => {
@@ -1755,6 +2298,21 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     frameStepInput.addEventListener("change", () => {
       frameStepInput.value = String(frameStep());
       applyEverySelection();
+    });
+    selectedFrameStepInput.addEventListener("change", () => {
+      selectedFrameStepInput.value = String(selectedFrameStep());
+    });
+    zoomOutButton.addEventListener("click", () => setPreviewZoom(previewZoom - 0.25));
+    zoomInButton.addEventListener("click", () => setPreviewZoom(previewZoom + 0.25));
+    zoomResetButton.addEventListener("click", () => setPreviewZoom(1));
+    zoomActualButton.addEventListener("click", () => setPreviewZoom(config.frameWidth / baseStageWidth()));
+    outputWidthInput.addEventListener("input", () => setOutputWidth(outputWidthInput.value));
+    outputHeightInput.addEventListener("input", () => setOutputHeight(outputHeightInput.value));
+    outputWidthInput.addEventListener("change", () => setOutputWidth(outputWidthInput.value));
+    outputHeightInput.addEventListener("change", () => setOutputHeight(outputHeightInput.value));
+    matchCropSizeButton.addEventListener("click", () => {
+      setOutputSize({ width: crop.width, height: crop.height });
+      status.textContent = "Output size matches crop";
     });
     pingPongInput.addEventListener("change", () => {
       syncPlaybackDirectionAtEndpoint();
@@ -1774,6 +2332,14 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     moveRightButton.addEventListener("click", () => moveSelectedSlots(1));
     sendEndButton.addEventListener("click", sendSelectedSlotsToEnd);
     reverseSelectedButton.addEventListener("click", reverseSelectedSlots);
+    selectAllCellsButton.addEventListener("click", selectAllCells);
+    deselectAllCellsButton.addEventListener("click", deselectAllCells);
+    enableSelectedButton.addEventListener("click", () => setSelectedCellsEnabled(true));
+    disableSelectedButton.addEventListener("click", () => setSelectedCellsEnabled(false));
+    enableSelectedEveryButton.addEventListener("click", () => setSelectedEveryCellsEnabled(true));
+    disableSelectedEveryButton.addEventListener("click", () => setSelectedEveryCellsEnabled(false));
+    keepSelectedEveryButton.addEventListener("click", keepOnlySelectedEveryCellsEnabled);
+    keepSelectedEnabledButton.addEventListener("click", keepSelectedEnabledSlots);
     toggleDeleteButton.addEventListener("click", deleteSelectedSlots);
     document.getElementById("restoreAll").addEventListener("click", resetSequence);
     document.getElementById("fitCurrent").addEventListener("click", () => {
@@ -1829,6 +2395,50 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         status.textContent = error instanceof Error ? error.message : "Project open failed";
       });
     });
+    importVideoButton.addEventListener("click", () => {
+      videoFileInput.click();
+    });
+    videoFileInput.addEventListener("change", () => {
+      const file = Array.from(videoFileInput.files || []).find(isVideoFile);
+      videoFileInput.value = "";
+      if (!file) {
+        status.textContent = "No video selected";
+        return;
+      }
+      importVideoFile(file).catch((error) => {
+        showImportError(error);
+        status.textContent = error instanceof Error ? error.message : "Video import failed";
+      });
+    });
+    document.addEventListener("dragover", (event) => {
+      if (!eventHasFiles(event)) {
+        return;
+      }
+      event.preventDefault();
+      stage.classList.add("video-drop-target");
+      event.dataTransfer.dropEffect = "copy";
+    });
+    document.addEventListener("dragleave", (event) => {
+      if (!event.relatedTarget) {
+        stage.classList.remove("video-drop-target");
+      }
+    });
+    document.addEventListener("drop", (event) => {
+      const file = droppedVideoFile(event);
+      if (!file) {
+        stage.classList.remove("video-drop-target");
+        return;
+      }
+      event.preventDefault();
+      stage.classList.remove("video-drop-target");
+      importVideoFile(file).catch((error) => {
+        showImportError(error);
+        status.textContent = error instanceof Error ? error.message : "Video import failed";
+      });
+    });
+    importProgressClose.addEventListener("click", () => {
+      importProgressDialog.close();
+    });
     projectSelect.addEventListener("change", () => {
       if (projectSelect.value) {
         setProjectName(projectSelect.value);
@@ -1875,6 +2485,8 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     renderTimeline();
     setSequenceCursor(0);
     setCrop(crop);
+    setOutputSize({ width: crop.width, height: crop.height });
+    applyStartupProjectDefaults();
     loadServerInfo().then(() => Promise.all([
       refreshProjects(),
       refreshViewerFolders(),
