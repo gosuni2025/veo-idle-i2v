@@ -902,7 +902,7 @@ function streamFile(filePath, response) {
 }
 
 function sendJson(response, statusCode, data) {
-  send(response, statusCode, `${JSON.stringify(data, null, 2)}\n`, "application/json; charset=utf-8");
+  send(response, statusCode, `${JSON.stringify(data)}\n`, "application/json; charset=utf-8");
 }
 
 function send(response, statusCode, body, contentType) {

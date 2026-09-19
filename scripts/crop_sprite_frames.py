@@ -14,6 +14,7 @@ from PIL import Image, ImageOps
 DEFAULT_OUTPUT_ROOT = Path("outputs/sprites-pymatting")
 DEFAULT_FRAME_DIR_NAME = "frames_pymatting_fg"
 PNG_GLOB = "frame_*.png"
+GENERATED_OUTPUT_FILES = ("crop-meta.json", "animation-sequence.json", "contact_sheet_crop.jpg")
 
 
 def main() -> int:
@@ -303,8 +304,13 @@ def resize_rgba_for_export(image: Image.Image, output_size: dict[str, int]) -> I
     next_size = (output_size["width"], output_size["height"])
     if next_size == image.size:
         return image
+    scale = min(next_size[0] / image.width, next_size[1] / image.height)
+    resized_size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
     # ponytail: Pillow RGBa is premultiplied alpha; use it instead of owning a fragile pixel loop.
-    return image.convert("RGBa").resize(next_size, Image.Resampling.LANCZOS).convert("RGBA")
+    resized = image.convert("RGBa").resize(resized_size, Image.Resampling.LANCZOS).convert("RGBA")
+    canvas = Image.new("RGBA", next_size, (0, 0, 0, 0))
+    canvas.alpha_composite(resized, ((next_size[0] - resized_size[0]) // 2, (next_size[1] - resized_size[1]) // 2))
+    return canvas
 
 
 def resolve_frame_dir(value: str | None) -> tuple[Path, Path]:
@@ -466,8 +472,15 @@ def default_out_dir(root_dir: Path, frame_dir: Path, crop: dict[str, int], timel
 
 def prepare_output_dir(path: Path, overwrite: bool) -> None:
     path.mkdir(parents=True, exist_ok=True)
-    if any(path.iterdir()) and not overwrite:
+    if not any(path.iterdir()):
+        return
+    if not overwrite:
         raise SystemExit(f"Output dir is not empty: {path}. Pass --overwrite to replace files.")
+    for old_frame in path.glob(PNG_GLOB):
+        if old_frame.is_file():
+            old_frame.unlink()
+    for name in GENERATED_OUTPUT_FILES:
+        (path / name).unlink(missing_ok=True)
 
 
 def make_contact_sheet(frame_dir: Path, out_path: Path) -> None:

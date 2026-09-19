@@ -291,6 +291,14 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       touch-action: none;
     }
 
+    .output-preview {
+      position: absolute;
+      inset: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
     .stage.video-drop-target {
       border-color: var(--accent);
       outline: 2px dashed var(--accent);
@@ -592,9 +600,11 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         <button id="zoomIn" type="button">확대</button>
         <button id="zoomReset" type="button">원상태</button>
         <button id="zoomActual" type="button">1:1</button>
+        <span class="meta" id="outputPreviewLabel">출력 1x1</span>
       </div>
       <div class="stage" id="stage">
-        <img id="frame" src="" alt="PyMatting sprite frame">
+        <canvas class="output-preview" id="outputPreview" width="1" height="1" aria-label="Export output preview"></canvas>
+        <img id="frame" src="" alt="PyMatting sprite frame" hidden>
         <div class="crop" id="cropOverlay"></div>
       </div>
     </main>
@@ -692,6 +702,8 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     const frame = document.getElementById("frame");
     const stage = document.getElementById("stage");
     const cropOverlay = document.getElementById("cropOverlay");
+    const outputPreview = document.getElementById("outputPreview");
+    const outputPreviewContext = outputPreview.getContext("2d");
     const play = document.getElementById("play");
     const prev = document.getElementById("prev");
     const next = document.getElementById("next");
@@ -738,6 +750,7 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     const zoomResetButton = document.getElementById("zoomReset");
     const zoomActualButton = document.getElementById("zoomActual");
     const previewZoomLabel = document.getElementById("previewZoomLabel");
+    const outputPreviewLabel = document.getElementById("outputPreviewLabel");
     const outputWidthInput = document.getElementById("outputWidth");
     const outputHeightInput = document.getElementById("outputHeight");
     const keepOutputAspectInput = document.getElementById("keepOutputAspect");
@@ -753,50 +766,51 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       height: document.getElementById("cropH"),
     };
     const buttonTitles = {
-      play: "재생/일시정지: 현재 on 상태이고 루프 범위 안에 있는 셀을 FPS 설정에 맞춰 미리보기로 재생하거나 멈춥니다.",
-      prev: "이전 프레임: 현재 미리보기 순서에서 이전 on 셀로 이동합니다.",
-      next: "다음 프레임: 현재 미리보기 순서에서 다음 on 셀로 이동합니다.",
-      zoomOut: "축소: 프리뷰 영역을 한 단계 작게 봅니다. 내보내기 픽셀 크기는 바뀌지 않습니다.",
-      zoomIn: "확대: 프리뷰 영역을 한 단계 크게 봅니다. 픽셀 확인용 화면 확대입니다.",
-      zoomReset: "원상태: 프리뷰 줌을 처음 열었을 때의 100% 상태로 되돌립니다.",
-      zoomActual: "1:1: 원본 프레임 픽셀을 화면 CSS 픽셀과 1:1 크기로 표시합니다.",
-      setLoopStart: "시작 지정: 현재 활성 슬롯을 루프와 내보내기 범위의 시작점으로 설정합니다.",
-      setLoopEnd: "끝 지정: 현재 활성 슬롯을 루프와 내보내기 범위의 끝점으로 설정합니다.",
-      duplicateFrame: "복제: 선택된 셀들을 바로 뒤에 복사합니다. 같은 원본 프레임을 재사용하므로 이미지 파일은 중복 저장하지 않습니다.",
-      moveLeft: "왼쪽 이동: 선택된 셀 묶음을 타임라인에서 한 칸 왼쪽으로 이동합니다.",
-      moveRight: "오른쪽 이동: 선택된 셀 묶음을 타임라인에서 한 칸 오른쪽으로 이동합니다.",
-      sendEnd: "끝으로: 선택된 셀 묶음을 타임라인 맨 끝으로 보내고 루프 끝도 새 마지막 슬롯으로 맞춥니다.",
-      reverseSelected: "반전: 선택된 셀들의 순서를 그 자리에서 뒤집습니다.",
-      selectAllCells: "전체 선택: 모든 타임라인 셀을 선택합니다. 단축키 Cmd+A.",
-      deselectAllCells: "선택 해제: 현재 선택된 셀을 모두 해제합니다. 단축키 Cmd+D.",
-      enableSelected: "선택 켜기: 선택된 셀을 모두 on으로 바꿔 미리보기와 내보내기에 포함합니다.",
-      disableSelected: "선택 끄기: 선택된 셀을 모두 off로 바꿔 미리보기와 내보내기에서 제외합니다.",
-      enableSelectedEvery: "N번째 켜기: 선택된 셀 목록 안에서 선택 N번째 값마다 해당하는 셀만 on으로 바꿉니다.",
-      disableSelectedEvery: "N번째 끄기: 선택된 셀 목록 안에서 선택 N번째 값마다 해당하는 셀만 off로 바꿉니다.",
-      keepSelectedEvery: "N번째만 남기기: 선택된 셀 목록 안에서 선택 N번째 값마다 해당하는 셀만 on으로 두고, 나머지 선택 셀은 off로 바꿉니다.",
-      keepSelectedEnabled: "선택 켜짐만 남기기: 선택되어 있으면서 on인 셀만 남기고 나머지 슬롯을 삭제합니다.",
-      toggleDelete: "슬롯 삭제: 선택된 셀을 타임라인에서 삭제합니다. 원본 PNG 파일은 삭제하지 않습니다.",
-      restoreAll: "전체 복원: 슬롯 순서, 복제, on/off 선택, 루프 범위를 처음 불러온 상태로 되돌립니다.",
-      fitCurrent: "현재 맞춤: 현재 보이는 프레임의 알파 영역을 기준으로 크롭 박스를 맞춥니다.",
-      fitAll: "전체 맞춤: 미리보기 대상 프레임 전체의 알파 영역을 스캔해 공통 크롭 박스를 맞춥니다.",
-      fullCrop: "전체 영역: 크롭 박스를 프레임 전체 크기로 되돌립니다.",
-      copyCommand: "명령 복사: 현재 크롭과 타임라인 설정으로 crop-sprites 명령을 클립보드에 복사합니다.",
-      matchCropSize: "크롭=출력: 내보내기 PNG 크기를 현재 크롭 픽셀 크기와 같게 맞춥니다.",
-      exportCropSequence: "크롭 내보내기: 백엔드 서버로 현재 크롭과 on 슬롯 시퀀스를 내보내 게임용 PNG와 JSON을 생성합니다.",
-      openExportFolder: "Finder 열기: 현재 내보내기 폴더를 Finder에서 엽니다.",
-      importVideo: "비디오 가져오기: MP4/MOV/WebM 파일을 업로드해 PyMatting 스프라이트 뷰어 프로젝트로 변환합니다.",
-      refreshViewers: "폴더 새로고침: 생성된 스프라이트 뷰어 폴더 목록을 다시 불러옵니다.",
-      openViewerProject: "새 프로젝트: 선택한 스프라이트 뷰어 폴더를 새 작업 대상으로 엽니다.",
-      refreshProjects: "새로고침: 저장된 프로젝트 목록을 다시 불러옵니다.",
-      saveProject: "프로젝트 저장: 현재 크롭, 슬롯 순서, on/off, 선택 상태, 내보내기 설정을 저장합니다. 단축키 Cmd+S.",
-      saveProjectAs: "다른 이름 저장: 현재 편집 상태를 새 프로젝트 이름으로 저장합니다.",
-      loadProject: "불러오기: 선택한 저장 프로젝트의 크롭과 타임라인 편집 상태를 불러옵니다.",
-      importProgressClose: "닫기: 비디오 가져오기 진행 창을 닫습니다.",
+      play: "의도: 현재 켜진 슬롯을 FPS와 루프 설정대로 미리 재생하거나 멈춥니다. 예: 머리카락 움직임이 자연스럽게 반복되는지 볼 때 누릅니다.",
+      prev: "의도: 미리보기 순서에서 바로 이전 켜진 슬롯으로 이동합니다. 예: 흔들림이 생긴 직전 프레임을 빠르게 확인할 때 씁니다.",
+      next: "의도: 미리보기 순서에서 바로 다음 켜진 슬롯으로 이동합니다. 예: 현재 컷 다음 프레임의 머리카락 위치를 비교할 때 씁니다.",
+      zoomOut: "의도: 화면 미리보기만 작게 보여 더 넓게 봅니다. 예: 큰 출력 크기에서 전체 실루엣과 크롭 여백을 확인할 때 씁니다.",
+      zoomIn: "의도: 화면 미리보기만 크게 보여 픽셀 단위로 확인합니다. 예: 머리카락 끝 알파나 마젠타 잔상을 확대해서 볼 때 씁니다.",
+      zoomReset: "의도: 미리보기 배율을 100%로 되돌립니다. 예: 확대 검수 후 기본 작업 배율로 돌아갈 때 씁니다.",
+      zoomActual: "의도: 출력 PNG를 CSS 픽셀 기준 1:1 크기로 봅니다. 예: 게임에 들어갈 실제 크기 감각을 확인할 때 씁니다.",
+      setLoopStart: "의도: 현재 슬롯을 반복과 내보내기 시작점으로 지정합니다. 예: 앞쪽 흔들린 프레임을 건너뛰고 안정적인 프레임부터 루프를 시작할 때 씁니다.",
+      setLoopEnd: "의도: 현재 슬롯을 반복과 내보내기 끝점으로 지정합니다. 예: 마지막에 포즈가 틀어지기 전 프레임에서 루프를 끊을 때 씁니다.",
+      duplicateFrame: "의도: 선택한 슬롯을 바로 뒤에 복제해 타이밍을 늘립니다. 예: 첫 프레임을 한 번 더 유지해 idle 시작을 차분하게 만들 때 씁니다.",
+      moveLeft: "의도: 선택한 슬롯 묶음을 타임라인에서 한 칸 앞당깁니다. 예: 튀는 프레임을 더 이른 위치로 옮겨 리듬을 맞출 때 씁니다.",
+      moveRight: "의도: 선택한 슬롯 묶음을 타임라인에서 한 칸 뒤로 보냅니다. 예: 복제한 정지 프레임을 다음 움직임 뒤로 미룰 때 씁니다.",
+      sendEnd: "의도: 선택한 슬롯 묶음을 맨 끝으로 보내고 루프 끝도 새 마지막 슬롯에 맞춥니다. 예: 복귀 포즈 프레임을 루프 마지막으로 정리할 때 씁니다.",
+      reverseSelected: "의도: 선택한 슬롯들의 순서만 뒤집습니다. 예: 앞으로 흔들린 머리카락 구간을 되감기처럼 붙여 핑퐁 느낌을 만들 때 씁니다.",
+      selectAllCells: "의도: 모든 타임라인 슬롯을 선택합니다. 예: 전체 프레임을 한 번에 켜거나 N번째 간격으로 정리할 때 씁니다. 단축키 Cmd+A.",
+      deselectAllCells: "의도: 현재 선택을 모두 해제합니다. 예: 범위 편집을 끝내고 단일 슬롯 작업으로 돌아갈 때 씁니다. 단축키 Cmd+D.",
+      enableSelected: "의도: 선택한 슬롯을 미리보기와 내보내기에 포함합니다. 예: 다시 살릴 프레임 구간을 선택한 뒤 한 번에 켤 때 씁니다.",
+      disableSelected: "의도: 선택한 슬롯을 미리보기와 내보내기에서 제외합니다. 예: 손가락이나 몸이 흔들린 프레임을 임시로 빼고 볼 때 씁니다.",
+      enableSelectedEvery: "의도: 선택 영역 안에서 선택 N번째 간격에 해당하는 슬롯만 켭니다. 예: 선택한 24프레임 중 2프레임마다 하나씩 다시 포함할 때 씁니다.",
+      disableSelectedEvery: "의도: 선택 영역 안에서 선택 N번째 간격에 해당하는 슬롯만 끕니다. 예: 너무 촘촘한 구간에서 3프레임마다 하나씩 덜어낼 때 씁니다.",
+      keepSelectedEvery: "의도: 선택 영역 안에서 선택 N번째 슬롯만 켜고 나머지는 끕니다. 예: 96프레임 idle을 절반 또는 3분의 1로 줄여 테스트할 때 씁니다.",
+      keepSelectedEnabled: "의도: 선택되어 있고 켜진 슬롯만 남긴 뒤 나머지 슬롯은 타임라인에서 삭제합니다. 예: 검수로 고른 좋은 프레임만 최종 시퀀스로 압축할 때 씁니다.",
+      toggleDelete: "의도: 선택한 슬롯을 타임라인에서 제거합니다. 예: 포즈가 튀는 프레임을 완전히 빼고 루프를 짧게 만들 때 씁니다. 원본 PNG는 지우지 않습니다.",
+      restoreAll: "의도: 슬롯 순서, 복제, 켜짐 상태, 루프 범위를 처음 불러온 상태로 되돌립니다. 예: 편집이 꼬였을 때 원본 시퀀스로 돌아갈 때 씁니다.",
+      fitCurrent: "의도: 현재 프레임의 투명도 있는 영역에 맞춰 크롭 박스를 잡습니다. 예: 지금 보이는 캐릭터만 빠르게 맞춰볼 때 씁니다.",
+      fitAll: "의도: 미리보기 대상 프레임 전체를 스캔해 공통 크롭 박스를 잡습니다. 예: 루프 전체에서 머리카락 끝이 잘리지 않는 안전한 크롭을 만들 때 씁니다.",
+      fullCrop: "의도: 크롭을 원본 프레임 전체 영역으로 되돌립니다. 예: 너무 좁게 자른 뒤 처음부터 다시 잡고 싶을 때 씁니다.",
+      copyCommand: "의도: 현재 크롭과 타임라인 설정을 crop-sprites 명령으로 복사합니다. 예: 같은 설정을 터미널에서 재실행하거나 기록할 때 씁니다.",
+      matchCropSize: "의도: 출력 PNG 크기를 현재 크롭 픽셀 크기와 같게 맞춥니다. 예: 리사이즈 없이 잘라낸 실제 픽셀 그대로 내보낼 때 씁니다.",
+      exportCropSequence: "의도: 현재 크롭과 켜진 슬롯 시퀀스를 백엔드로 내보내 게임용 PNG와 JSON을 만듭니다. 예: 엔진에 넣을 최종 idle 프레임 묶음을 생성할 때 씁니다.",
+      openExportFolder: "의도: 현재 내보내기 폴더를 Finder에서 엽니다. 예: 생성된 PNG, animation-sequence.json, contact sheet를 바로 확인할 때 씁니다.",
+      importVideo: "의도: 새 MP4, MOV, WebM을 PyMatting 스프라이트 프로젝트로 가져옵니다. 예: Flow에서 내려받은 새 idle 영상을 바로 변환할 때 씁니다.",
+      refreshViewers: "의도: 생성된 스프라이트 뷰어 폴더 목록을 다시 불러옵니다. 예: 새 영상 변환 후 목록에 보이지 않을 때 씁니다.",
+      openViewerProject: "의도: 선택한 스프라이트 뷰어 폴더를 현재 작업 대상으로 엽니다. 예: 다른 Flow 결과물의 프레임을 비교 검수할 때 씁니다.",
+      refreshProjects: "의도: 저장된 프로젝트 목록을 다시 불러옵니다. 예: 다른 창에서 저장한 프로젝트가 목록에 없을 때 씁니다.",
+      saveProject: "의도: 현재 크롭, 슬롯 순서, 켜짐 상태, 선택, 내보내기 설정을 같은 이름으로 저장합니다. 예: 작업 중간 지점을 남길 때 씁니다. 단축키 Cmd+S.",
+      saveProjectAs: "의도: 현재 편집 상태를 새 프로젝트 이름으로 저장합니다. 예: 원본 검수본은 남기고 짧은 루프 버전을 따로 만들 때 씁니다.",
+      loadProject: "의도: 선택한 저장 프로젝트의 크롭과 타임라인 편집 상태를 불러옵니다. 예: 어제 저장한 검수 상태에서 다시 이어갈 때 씁니다.",
+      importProgressClose: "의도: 비디오 가져오기 진행 창을 닫습니다. 예: 가져오기가 끝났거나 실패 메시지를 확인한 뒤 작업 화면으로 돌아갈 때 씁니다.",
     };
     for (const [id, title] of Object.entries(buttonTitles)) {
       const button = document.getElementById(id);
       if (button) {
         button.title = title;
+        button.setAttribute("aria-label", title);
       }
     }
     let index = 0;
@@ -813,18 +827,15 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     let draggedSlotIndex = null;
     const frameSlots = [];
 
-    stage.style.aspectRatio = `${config.frameWidth} / ${config.frameHeight}`;
     let previewZoom = 1;
 
-    function baseStageWidth() {
-      const availableWidth = Math.max(240, window.innerWidth - 28);
-      const availableHeight = Math.max(240, window.innerHeight - 184);
-      return Math.max(240, Math.min(1280, availableWidth, availableHeight * config.frameWidth / config.frameHeight));
-    }
-
     function applyPreviewZoom() {
-      stage.style.width = `${Math.max(1, Math.floor(baseStageWidth() * previewZoom))}px`;
+      const size = outputSize();
+      stage.style.aspectRatio = `${size.width} / ${size.height}`;
+      stage.style.width = `${Math.max(1, Math.floor(size.width * previewZoom))}px`;
+      stage.style.height = `${Math.max(1, Math.floor(size.height * previewZoom))}px`;
       previewZoomLabel.textContent = `줌 ${Math.round(previewZoom * 100)}%`;
+      renderOutputPreview();
     }
 
     function setPreviewZoom(nextZoom) {
@@ -1040,6 +1051,35 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     function setOutputSize(size) {
       outputWidthInput.value = String(outputDimension({ value: size.width }, crop.width));
       outputHeightInput.value = String(outputDimension({ value: size.height }, crop.height));
+      applyPreviewZoom();
+    }
+
+    function outputDrawRect(size, sourceCrop = crop) {
+      const scale = Math.min(size.width / sourceCrop.width, size.height / sourceCrop.height);
+      const width = Math.max(1, Math.round(sourceCrop.width * scale));
+      const height = Math.max(1, Math.round(sourceCrop.height * scale));
+      return {
+        x: Math.floor((size.width - width) / 2),
+        y: Math.floor((size.height - height) / 2),
+        width,
+        height,
+        scale,
+      };
+    }
+
+    function renderOutputPreview() {
+      const size = outputSize();
+      outputPreview.width = size.width;
+      outputPreview.height = size.height;
+      outputPreviewLabel.textContent = `출력 ${size.width}x${size.height}`;
+      outputPreviewContext.clearRect(0, 0, size.width, size.height);
+      if (!frame.complete || !frame.naturalWidth) {
+        return;
+      }
+      const rect = outputDrawRect(size);
+      outputPreviewContext.imageSmoothingEnabled = true;
+      outputPreviewContext.clearRect(0, 0, size.width, size.height);
+      outputPreviewContext.drawImage(frame, crop.x, crop.y, crop.width, crop.height, rect.x, rect.y, rect.width, rect.height);
     }
 
     function outputMatchesCrop(targetCrop) {
@@ -1210,7 +1250,8 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         header.className = "frame-header";
         header.draggable = true;
         header.textContent = String(sourceFrame);
-        header.title = `셀 선택/이동: 슬롯 ${slotIndex + 1}, 원본 프레임 ${sourceFrame}. 클릭하면 이 셀만 선택하고, Shift+클릭은 범위 선택, Cmd+클릭은 선택 추가/해제, 드래그는 순서 이동입니다. 파일: ${frameNames[sourceFrame - 1]}`;
+        header.title = `의도: 타임라인 슬롯을 선택하거나 순서를 옮깁니다. 예: 슬롯 ${slotIndex + 1}을 클릭해 현재 작업 대상으로 잡고, Shift+클릭으로 범위를 선택하거나 드래그로 루프 순서를 조정합니다. 원본 프레임 ${sourceFrame}, 파일: ${frameNames[sourceFrame - 1]}`;
+        header.setAttribute("aria-label", header.title);
         header.addEventListener("click", (event) => {
           selectSlotFromClick(slotIndex, event);
         });
@@ -1230,7 +1271,8 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         toggle.type = "button";
         toggle.className = "frame-toggle";
         toggle.setAttribute("aria-pressed", slotEnabled[slotIndex] ? "true" : "false");
-        toggle.title = `셀 on/off: 슬롯 ${slotIndex + 1}을 미리보기와 내보내기에 ${slotEnabled[slotIndex] ? "포함" : "제외"}합니다. 클릭하면 현재 셀의 on/off 상태가 바뀝니다.`;
+        toggle.title = `의도: 슬롯 ${slotIndex + 1}을 미리보기와 내보내기에 포함할지 바꿉니다. 예: 몸이나 손이 흔들린 프레임은 끄고, 머리카락만 자연스러운 프레임은 켜 둡니다. 현재 상태: ${slotEnabled[slotIndex] ? "포함" : "제외"}.`;
+        toggle.setAttribute("aria-label", toggle.title);
         toggle.addEventListener("click", () => {
           playing = false;
           play.textContent = "재생";
@@ -1507,23 +1549,25 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     }
 
     function renderCrop() {
-      cropOverlay.style.display = "block";
-      cropOverlay.style.left = `${(crop.x / config.frameWidth) * 100}%`;
-      cropOverlay.style.top = `${(crop.y / config.frameHeight) * 100}%`;
-      cropOverlay.style.width = `${(crop.width / config.frameWidth) * 100}%`;
-      cropOverlay.style.height = `${(crop.height / config.frameHeight) * 100}%`;
+      cropOverlay.style.display = "none";
+      renderOutputPreview();
     }
 
-    function pointFromEvent(event) {
+    function pointFromEvent(event, sourceCrop = crop) {
       const rect = stage.getBoundingClientRect();
+      const size = outputSize();
+      const drawRect = outputDrawRect(size, sourceCrop);
+      const localX = clamp(((event.clientX - rect.left) / rect.width) * size.width, drawRect.x, drawRect.x + drawRect.width);
+      const localY = clamp(((event.clientY - rect.top) / rect.height) * size.height, drawRect.y, drawRect.y + drawRect.height);
       return {
-        x: clamp(((event.clientX - rect.left) / rect.width) * config.frameWidth, 0, config.frameWidth - 1),
-        y: clamp(((event.clientY - rect.top) / rect.height) * config.frameHeight, 0, config.frameHeight - 1),
+        x: clamp(sourceCrop.x + ((localX - drawRect.x) / drawRect.scale), 0, config.frameWidth - 1),
+        y: clamp(sourceCrop.y + ((localY - drawRect.y) / drawRect.scale), 0, config.frameHeight - 1),
       };
     }
 
     let drawing = false;
     let drawStart = null;
+    let drawCrop = null;
     stage.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) {
         return;
@@ -1531,7 +1575,8 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       playing = false;
       play.textContent = "재생";
       drawing = true;
-      drawStart = pointFromEvent(event);
+      drawCrop = { ...crop };
+      drawStart = pointFromEvent(event, drawCrop);
       stage.setPointerCapture(event.pointerId);
       setCrop({ x: drawStart.x, y: drawStart.y, width: 1, height: 1 });
     });
@@ -1540,7 +1585,7 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
       if (!drawing || !drawStart) {
         return;
       }
-      const point = pointFromEvent(event);
+      const point = pointFromEvent(event, drawCrop || crop);
       const x = Math.min(drawStart.x, point.x);
       const y = Math.min(drawStart.y, point.y);
       setCrop({
@@ -1554,6 +1599,7 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     stage.addEventListener("pointerup", () => {
       drawing = false;
       drawStart = null;
+      drawCrop = null;
     });
 
     for (const [key, input] of Object.entries(cropInputs)) {
@@ -1835,7 +1881,9 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
         let doneEvent = null;
 
         function handleImportEvent(event) {
-          if (event.type === "uploaded") {
+          if (event.error) {
+            reject(new Error(event.error));
+          } else if (event.type === "uploaded") {
             setImportProgress("Upload complete; extracting frames");
           } else if (event.type === "progress") {
             setImportProgress(event.message || "Recovering transparent frames", event.percent);
@@ -2305,14 +2353,15 @@ def write_viewer(out_dir: Path, frame_count: int, sprite_dir: Path) -> None:
     zoomOutButton.addEventListener("click", () => setPreviewZoom(previewZoom - 0.25));
     zoomInButton.addEventListener("click", () => setPreviewZoom(previewZoom + 0.25));
     zoomResetButton.addEventListener("click", () => setPreviewZoom(1));
-    zoomActualButton.addEventListener("click", () => setPreviewZoom(config.frameWidth / baseStageWidth()));
+    zoomActualButton.addEventListener("click", () => setPreviewZoom(1));
+    frame.addEventListener("load", renderOutputPreview);
     outputWidthInput.addEventListener("input", () => setOutputWidth(outputWidthInput.value));
     outputHeightInput.addEventListener("input", () => setOutputHeight(outputHeightInput.value));
     outputWidthInput.addEventListener("change", () => setOutputWidth(outputWidthInput.value));
     outputHeightInput.addEventListener("change", () => setOutputHeight(outputHeightInput.value));
     matchCropSizeButton.addEventListener("click", () => {
       setOutputSize({ width: crop.width, height: crop.height });
-      status.textContent = "Output size matches crop";
+      status.textContent = "출력 크기를 크롭과 맞췄습니다";
     });
     pingPongInput.addEventListener("change", () => {
       syncPlaybackDirectionAtEndpoint();
